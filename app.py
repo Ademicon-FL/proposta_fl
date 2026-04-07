@@ -121,10 +121,7 @@ class CoverHeader(Flowable):
 
         c.setFillColor(C_WHITE)
         c.setFont("Helvetica-Bold", 16)
-        c.drawCentredString(self.width / 2, self.height / 2 + 4, "PROPOSTA DE CRÉDITO ESTRUTURADO")
-        c.setFont("Helvetica", 9)
-        c.setFillColor(colors.HexColor("#A8C4E0"))
-        c.drawCentredString(self.width / 2, self.height / 2 - 8, "Consórcio Imobiliário · Ademicon")
+        c.drawCentredString(self.width / 2, self.height / 2 - 4, "PROPOSTA DE CRÉDITO ESTRUTURADO")
 
 
 class SectionHeader(Flowable):
@@ -177,16 +174,15 @@ CONTENT_WIDTH = PAGE_W - 2 * MARGIN
 def build_info_block(cfg, dados, styles):
     """Client/proposal info block."""
     ref_date = cfg["data_referencia"].strftime("%d/%m/%Y")
-    gen_date = datetime.date.today().strftime("%d/%m/%Y")
 
     rows = [
-        ["Cliente:", cfg["nome_cliente"],      "Data de Referência:", ref_date],
-        ["Gerente:", cfg["gerente"],            "Data de Geração:",    gen_date],
-        ["Cargo:",   cfg["cargo"],              "Tipo:",               "Consórcio Imobiliário"],
-        ["Unidade:", cfg["unidade"],            "",                    ""],
+        ["Cliente:",   cfg["nome_cliente"], "Data de Referência:", ref_date],
+        ["Consultor:", cfg["gerente"],       "",                    ""],
+        ["Cargo:",     cfg["cargo"],         "",                    ""],
+        ["Unidade:",   cfg["unidade"],       "",                    ""],
     ]
 
-    col_w = [30*mm, 60*mm, 42*mm, 38*mm]
+    col_w = [30*mm, 75*mm, 42*mm, 23*mm]
     data = []
     for r in rows:
         data.append([
@@ -198,125 +194,197 @@ def build_info_block(cfg, dados, styles):
 
     t = Table(data, colWidths=col_w)
     t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), C_LITE_BLUE),
-        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID",       (0, 0), (-1, -1), 0.3, C_MED_BLUE),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND",    (0, 0), (-1, -1), C_LITE_BLUE),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_MED_BLUE),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LEFTPADDING",   (0, 0), (-1, -1), 5),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+        # Highlight client name row
+        ("BACKGROUND",    (0, 0), (1, 0), colors.HexColor("#C5D9F1")),
+        ("FONTNAME",      (1, 0), (1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",      (1, 0), (1, 0), 10),
     ]))
     return t
 
 
+def _compute_fluxo_stats(fluxo_rows):
+    """Derive prazo/distribution/post-contemplation stats from monthly flow rows."""
+    contemp_idx = [i for i, r in enumerate(fluxo_rows) if r.get("contemplado")]
+
+    distribuicao = [i + 1 for i in contemp_idx]
+    prazo_pre    = max(contemp_idx) + 1 if contemp_idx else None
+    prazo_total  = len(fluxo_rows)
+    prazo_pos    = (prazo_total - prazo_pre) if prazo_pre else None
+
+    # Post-contemplation installment: first valor_pago after last contemplation
+    parcela_pos = None
+    if contemp_idx:
+        for r in fluxo_rows[max(contemp_idx) + 1:]:
+            v = r.get("valor_pago")
+            if v is not None and float(v) > 0:
+                parcela_pos = v
+                break
+
+    return dict(
+        distribuicao=distribuicao,
+        prazo_pre=prazo_pre,
+        prazo_pos=prazo_pos,
+        prazo_total=prazo_total,
+        parcela_pos=parcela_pos,
+    )
+
+
 def build_resumo_executivo(dados, cfg, styles):
-    """Resumo executivo: TIR, crédito total, parcela, prazo."""
+    """Resumo executivo — 4-column KPI grid matching Ademicon standard layout."""
     elems = []
     elems.append(Spacer(1, 4*mm))
     elems.append(SectionHeader("Resumo Executivo", CONTENT_WIDTH))
     elems.append(Spacer(1, 3*mm))
 
-    resumo = dados.get("resumo") or {}
-    fluxo  = dados.get("fluxo")  or {}
+    resumo   = dados.get("resumo")   or {}
+    fluxo_d  = dados.get("fluxo")    or {}
+    fl_rows  = fluxo_d.get("fluxo",  [])
+    stats    = _compute_fluxo_stats(fl_rows)
 
-    credito = resumo.get("credito_total") or fluxo.get("credito_total")
-    parcela = resumo.get("valor_parcela") or fluxo.get("parcela")
-    prazo   = resumo.get("qtd_parcelas")
-    tir_m   = resumo.get("tir_mensal") or fluxo.get("tir_mensal")
-    tir_a   = resumo.get("tir_anual")  or fluxo.get("tir_anual")
-    taxa_e  = resumo.get("taxa_estatica")
+    # Credit values — RESUMO has the NET credit; FLUXO has the GROSS contracted
+    credito_liquido = resumo.get("credito_total")
+    credito_bruto   = fluxo_d.get("credito_total")
+    num_cotas       = fluxo_d.get("total_cotas")
+    parcela_pre     = resumo.get("valor_parcela") or fluxo_d.get("parcela")
+    parcela_pos     = stats.get("parcela_pos")
+    tir_m           = resumo.get("tir_mensal") or fluxo_d.get("tir_mensal")
+    tir_a           = resumo.get("tir_anual")  or fluxo_d.get("tir_anual")
 
-    versao_tir = cfg.get("versao_tir", "Com FIDC")
+    dist = stats.get("distribuicao") or []
+    dist_str = f"meses {dist}" if dist else "—"
+    prazo_pre_str   = f"{stats['prazo_pre']} meses"  if stats.get("prazo_pre")  else "—"
+    prazo_pos_str   = f"{stats['prazo_pos']} meses"  if stats.get("prazo_pos")  else "—"
+    prazo_total_str = f"{stats['prazo_total']} meses" if stats.get("prazo_total") else "—"
 
-    kpis = []
-    kpis.append(("Crédito Total Levantado", _brl(credito)))
-    kpis.append(("Valor da Parcela (Pré-Contemplação)", _brl(parcela)))
-    kpis.append(("Quantidade de Parcelas", _fmt_num(prazo)))
+    # 4-col: INDICADOR | VALOR | INDICADOR | VALOR
+    def row(lk, lv, rk="", rv="", highlight_left=False, highlight_right=False):
+        ls = styles["body"]
+        rs = styles["body"]
+        lv_p = Paragraph(lv, ParagraphStyle(
+            "HL", parent=ls,
+            fontName="Helvetica-Bold" if highlight_left else "Helvetica",
+            textColor=colors.HexColor("#1A5276") if highlight_left else C_BLACK,
+        ))
+        rv_p = Paragraph(rv, ParagraphStyle(
+            "HR", parent=rs,
+            fontName="Helvetica-Bold" if highlight_right else "Helvetica",
+            textColor=colors.HexColor("#1A5276") if highlight_right else C_BLACK,
+        ))
+        return [
+            Paragraph(f"<b>{lk}</b>", ls),
+            lv_p,
+            Paragraph(f"<b>{rk}</b>", ls) if rk else Paragraph("", ls),
+            rv_p,
+        ]
 
-    if versao_tir in ("Com FIDC", "Ambas"):
-        kpis.append(("TIR Mensal (com FIDC)", _pct(tir_m)))
-        kpis.append(("TIR Anual (com FIDC)", _pct(tir_a)))
-    if versao_tir in ("Sem FIDC", "Ambas"):
-        kpis.append(("Taxa Estática Mensal", _pct(taxa_e)))
+    # Header row
+    hdr = [
+        Paragraph("<b>INDICADOR</b>", styles["body"]),
+        Paragraph("<b>VALOR</b>", styles["body"]),
+        Paragraph("<b>INDICADOR</b>", styles["body"]),
+        Paragraph("<b>VALOR</b>", styles["body"]),
+    ]
 
-    # 2-column KPI grid
-    half = (len(kpis) + 1) // 2
-    left  = kpis[:half]
-    right = kpis[half:]
+    table_rows = [
+        hdr,
+        row("Crédito líquido total",      _brl(credito_liquido),
+            "TIR mensal da operação",     _pct(tir_m, 4)),
+        row("Crédito bruto (pré-FIDC)",   _brl(credito_bruto),
+            "TIR anual da operação",      _pct(tir_a, 2)),
+        row("Número de cotas",            _fmt_num(num_cotas),
+            "Distribuição",               dist_str),
+        row("Parcela pré-contemplação",   f"{_brl(parcela_pre)}/mês",
+            "Prazo pré-contemplação",     prazo_pre_str),
+        row("Parcela pós-contemplação",   f"{_brl(parcela_pos)}/mês",
+            "Prazo pós-contemplação",     prazo_pos_str,
+            highlight_left=True, highlight_right=False),
+        row("",                           "",
+            "Prazo total máximo",         prazo_total_str),
+    ]
 
-    while len(right) < len(left):
-        right.append(("", ""))
+    col_w = [55*mm, 37*mm, 52*mm, 26*mm]
+    t = Table(table_rows, colWidths=col_w)
 
-    rows = []
-    for (lk, lv), (rk, rv) in zip(left, right):
-        rows.append([
-            Paragraph(f"<b>{lk}</b>", styles["body"]),
-            Paragraph(lv, styles["body"]),
-            Paragraph(f"<b>{rk}</b>", styles["body"]) if rk else Paragraph("", styles["body"]),
-            Paragraph(rv, styles["body"]) if rv else Paragraph("", styles["body"]),
-        ])
-
-    col_w = [55*mm, 35*mm, 55*mm, 25*mm]
-    t = Table(rows, colWidths=col_w)
     cmds = [
-        ("BACKGROUND",    (0, 0), (-1, -1), C_LITE_BLUE),
-        ("GRID",          (0, 0), (-1, -1), 0.3, C_MED_BLUE),
+        # Header
+        ("BACKGROUND", (0, 0), (-1, 0), C_DARK_BLUE),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), C_WHITE),
+        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
+        ("FONTSIZE",   (0, 0), (-1, 0), 8),
+        # All cells
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING",    (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("GRID",          (0, 0), (-1, -1), 0.3, colors.HexColor("#CCCCCC")),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING",   (0, 0), (-1, -1), 5),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8.5),
+        ("FONTSIZE",      (0, 1), (-1, -1), 8.5),
+        # Right-align value columns
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+        ("ALIGN", (3, 1), (3, -1), "RIGHT"),
     ]
+
     # Alternate row backgrounds
-    for i in range(len(rows)):
-        bg = C_LITE_BLUE if i % 2 == 0 else C_WHITE
+    for i in range(1, len(table_rows)):
+        bg = C_LITE_BLUE if i % 2 == 1 else C_WHITE
         cmds.append(("BACKGROUND", (0, i), (-1, i), bg))
+
+    # Highlight parcela pós row (row index 5)
+    cmds.append(("BACKGROUND", (0, 5), (1, 5), colors.HexColor("#C9E4FF")))
+    cmds.append(("FONTNAME",   (0, 5), (1, 5), "Helvetica-Bold"))
+    cmds.append(("FONTSIZE",   (1, 5), (1, 5), 9))
 
     t.setStyle(TableStyle(cmds))
     elems.append(t)
     return elems
 
 
-def build_custo_fidc(dados, styles):
-    """FIDC cost block."""
+def build_custo_fidc(dados, cfg, styles):
+    """FIDC cost block — fee = pct_fidc % of total lances paid."""
     elems = []
     elems.append(Spacer(1, 4*mm))
     elems.append(SectionHeader("Custo FIDC", CONTENT_WIDTH))
     elems.append(Spacer(1, 3*mm))
 
-    fluxo = dados.get("fluxo") or {}
-    resumo = dados.get("resumo") or {}
-    carteira = dados.get("carteira") or {}
+    fluxo_d  = dados.get("fluxo")    or {}
+    fl_rows  = fluxo_d.get("fluxo",  [])
+    pct_fidc = cfg.get("pct_fidc", 0.05)   # sidebar-configurable, default 5 %
 
-    credito = fluxo.get("credito_total") or resumo.get("credito_total")
-    taxa_fidc = fluxo.get("taxa_fidc")
-    lance_embutido = None
-
-    for k, v in (carteira.get("totais") or {}).items():
-        if "total carteira" in k.lower() or "lance livre" in k.lower():
-            if v.get("lance_embutido"):
-                lance_embutido = v["lance_embutido"]
-                break
+    # Total lances = sum of lance_pago in contemplation months
+    total_lances = None
+    try:
+        total_lances = sum(
+            float(r.get("lance_pago") or 0)
+            for r in fl_rows if r.get("contemplado")
+        )
+    except Exception:
+        pass
 
     fee_total = None
-    if credito and taxa_fidc:
+    if total_lances is not None and total_lances > 0:
         try:
-            fee_total = float(credito) * float(taxa_fidc)
+            fee_total = total_lances * pct_fidc
         except Exception:
             pass
 
     rows = [
-        [Paragraph("<b>Indicador</b>", styles["body"]), Paragraph("<b>Valor</b>", styles["body"])],
-        [Paragraph("Taxa FIDC (fee sobre crédito)", styles["body"]), Paragraph(_pct(taxa_fidc), styles["body"])],
-        [Paragraph("Crédito Total (base de cálculo)", styles["body"]), Paragraph(_brl(credito), styles["body"])],
-        [Paragraph("Fee Total FIDC", styles["body"]), Paragraph(_brl(fee_total), styles["body"])],
+        [Paragraph("<b>Indicador</b>", styles["body"]),
+         Paragraph("<b>Valor</b>",     styles["body"])],
+        [Paragraph("Taxa FIDC (fee sobre lances pagos)", styles["body"]),
+         Paragraph(_pct(pct_fidc), styles["body"])],
+        [Paragraph("Total de lances pagos (base de cálculo)", styles["body"]),
+         Paragraph(_brl(total_lances), styles["body"])],
+        [Paragraph("Fee Total FIDC", styles["body"]),
+         Paragraph(_brl(fee_total), styles["body"])],
     ]
-    if lance_embutido:
-        rows.append([
-            Paragraph("Lance Embutido Total (recursos FIDC)", styles["body"]),
-            Paragraph(_brl(lance_embutido), styles["body"])
-        ])
 
     col_w = [110*mm, 60*mm]
     t = Table(rows, colWidths=col_w)
@@ -324,13 +392,14 @@ def build_custo_fidc(dados, styles):
     for i in range(1, len(rows)):
         bg = C_LITE_BLUE if i % 2 == 1 else C_WHITE
         cmds.append(("BACKGROUND", (0, i), (-1, i), bg))
+    cmds.append(("ALIGN", (1, 0), (1, -1), "RIGHT"))
     t.setStyle(TableStyle(cmds))
     elems.append(t)
     return elems
 
 
 def build_fluxo_12m(dados, styles):
-    """First 12 months flow table, contemplation rows highlighted in green."""
+    """First 12 months flow table — clean client-facing view, contemplation rows in green."""
     elems = []
     elems.append(Spacer(1, 4*mm))
     elems.append(SectionHeader("Fluxo dos Primeiros 12 Meses", CONTENT_WIDTH))
@@ -344,12 +413,12 @@ def build_fluxo_12m(dados, styles):
         return elems
 
     header = [
-        Paragraph("<b>Mês</b>", styles["body"]),
-        Paragraph("<b>Ctas\nContemp.</b>", styles["body"]),
-        Paragraph("<b>Valor Pago</b>", styles["body"]),
-        Paragraph("<b>Lance Pago</b>", styles["body"]),
-        Paragraph("<b>Créd. Liberado</b>", styles["body"]),
-        Paragraph("<b>Créd. Líq. Acum.</b>", styles["body"]),
+        Paragraph("<b>Mês</b>",               styles["body"]),
+        Paragraph("<b>Parcela</b>",            styles["body"]),
+        Paragraph("<b>Cotas\nContemp.</b>",    styles["body"]),
+        Paragraph("<b>Lance</b>",              styles["body"]),
+        Paragraph("<b>Créd. Liberado</b>",     styles["body"]),
+        Paragraph("<b>Créd. Acumulado</b>",    styles["body"]),
     ]
 
     table_rows = [header]
@@ -360,14 +429,14 @@ def build_fluxo_12m(dados, styles):
             contemplated_rows.append(i)
         table_rows.append([
             Paragraph(_fmt_mes(r.get("mes")), styles["body"]),
-            Paragraph(_fmt_num(r.get("cotas_contempladas")), styles["body"]),
             Paragraph(_brl(r.get("valor_pago"), ""), styles["body"]),
+            Paragraph(_fmt_num(r.get("cotas_contempladas")), styles["body"]),
             Paragraph(_brl(r.get("lance_pago"), ""), styles["body"]),
             Paragraph(_brl(r.get("credito_liberado"), ""), styles["body"]),
             Paragraph(_brl(r.get("credito_liquido_acumulado"), ""), styles["body"]),
         ])
 
-    col_w = [22*mm, 20*mm, 32*mm, 32*mm, 32*mm, 32*mm]
+    col_w = [22*mm, 32*mm, 22*mm, 32*mm, 34*mm, 28*mm]
     t = Table(table_rows, colWidths=col_w, repeatRows=1)
     cmds = _base_table_style(1)
 
@@ -375,9 +444,9 @@ def build_fluxo_12m(dados, styles):
         cmds.append(("BACKGROUND", (0, idx), (-1, idx), C_GREEN))
         cmds.append(("FONTNAME",   (0, idx), (-1, idx), "Helvetica-Bold"))
 
-    # Align numbers right
-    for col in range(1, 6):
+    for col in [1, 3, 4, 5]:
         cmds.append(("ALIGN", (col, 1), (col, -1), "RIGHT"))
+    cmds.append(("ALIGN", (2, 1), (2, -1), "CENTER"))
 
     t.setStyle(TableStyle(cmds))
     elems.append(t)
@@ -385,7 +454,8 @@ def build_fluxo_12m(dados, styles):
     if contemplated_rows:
         elems.append(Spacer(1, 2*mm))
         elems.append(Paragraph(
-            "* Meses <font color='#2E7D32'><b>destacados em verde</b></font> indicam contemplação de cotas.",
+            "* Meses <font color='#2E7D32'><b>destacados em verde</b></font> "
+            "correspondem às contemplações.",
             styles["body"]
         ))
     return elems
@@ -630,7 +700,7 @@ def gerar_pdf(cfg, dados):
         story += build_resumo_executivo(dados, cfg, styles)
 
     if cfg.get("sec_fidc"):
-        story += build_custo_fidc(dados, styles)
+        story += build_custo_fidc(dados, cfg, styles)
 
     if cfg.get("sec_fluxo"):
         story += build_fluxo_12m(dados, styles)
@@ -693,7 +763,7 @@ with st.sidebar:
 
     st.markdown("**👤 Identificação**")
     nome_cliente = st.text_input("Nome do Cliente", placeholder="Ex.: Grupo Acme S/A")
-    gerente      = st.text_input("Gerente Responsável", value="Julio Cesar Santos")
+    gerente      = st.text_input("Consultor", value="Julio Cesar Santos")
     cargo        = st.text_input("Cargo", value="Gerente de Crédito Estruturado")
     unidade      = st.text_input("Unidade", value="Ademicon Faria Lima")
     data_ref     = st.date_input("Data de Referência", value=datetime.date.today())
@@ -708,8 +778,13 @@ with st.sidebar:
     sec_disclaimer = st.toggle("Disclaimer Padrão Ademicon",  value=True)
 
     st.markdown("---")
-    st.markdown("**📈 Versão da TIR**")
-    versao_tir = st.radio("Exibir TIR:", ["Com FIDC", "Sem FIDC", "Ambas"], index=0)
+    st.markdown("**💰 Parâmetros FIDC**")
+    pct_fidc_input = st.number_input(
+        "Fee FIDC sobre lances (%)", min_value=0.0, max_value=100.0,
+        value=5.0, step=0.5, format="%.1f",
+        help="Percentual aplicado sobre o total de lances pagos"
+    )
+    pct_fidc = pct_fidc_input / 100.0
 
 # ── Main area ─────────────────────────────────────────────────────────────────
 uploaded = st.file_uploader(
@@ -863,7 +938,7 @@ else:
         "cargo":           cargo,
         "unidade":         unidade,
         "data_referencia": data_ref,
-        "versao_tir":      versao_tir,
+        "pct_fidc":        pct_fidc,
         "sec_resumo":      sec_resumo,
         "sec_fidc":        sec_fidc,
         "sec_fluxo":       sec_fluxo,
